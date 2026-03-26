@@ -35,7 +35,7 @@ bool get_port_info(uint8_t port_id, port_t *out)
         return false;
     }
 
-    memcpy(out, resp.payload, sizeof(out));
+    memcpy(out, resp.payload, sizeof(*out));
     return true;
 }
 
@@ -145,14 +145,101 @@ void handle_lookup_connection(const udp_message_t *req, udp_message_t *resp)
 
 void handle_create_connection(const udp_message_t *req, udp_message_t *resp)
 {
-    // TODO: F3 — Create Connection Handler (/5 pts)
-    //
-    // Implement the logic to create a new connection between a line port
-    // and a client port. The request payload tells you the desired name for the connection
-    // and port pair — see common.h for the struct.
-    //
-    // Refer to the HLD for connection creation validation instructions.
-    // Use set_error_msg() to report *why* a create was rejected.
+    const udp_create_conn_request_t *payload = (const udp_create_conn_request_t *)req->payload;
+    resp->status = STATUS_FAILURE;
+
+    if (payload->name[0] == '\0')
+    {
+        set_error_msg(resp, "connection name cannot be empty");
+        return;
+    }
+
+    if (payload->line_port < 1 || payload->line_port > 2)
+    {
+        set_error_msg(resp, "line port must be in range [1, 2]");
+        return;
+    }
+
+    if (payload->client_port < 3 || payload->client_port > 6)
+    {
+        set_error_msg(resp, "client port must be in range [3, 6]");
+        return;
+    }
+
+    if (find_connection_by_name(payload->name) != NULL)
+    {
+        set_error_msg(resp, "connection name already exists");
+        return;
+    }
+
+    for (int i = 0; i < MAX_CONNS; i++)
+    {
+        if (conns[i].client_port == payload->client_port)
+        {
+            set_error_msg(resp, "client port already has a connection");
+            return;
+        }
+    }
+
+    int free_idx = -1;
+    for (int i = 0; i < MAX_CONNS; i++)
+    {
+        if (conns[i].client_port == 0)
+        {
+            free_idx = i;
+            break;
+        }
+    }
+
+    if (free_idx < 0)
+    {
+        set_error_msg(resp, "connection table is full");
+        return;
+    }
+
+    port_t line_port_info = {0};
+    port_t client_port_info = {0};
+
+    if (!get_port_info(payload->line_port, &line_port_info) ||
+        !get_port_info(payload->client_port, &client_port_info))
+    {
+        set_error_msg(resp, "failed to read port state");
+        return;
+    }
+
+    if (line_port_info.type != LINE_PORT)
+    {
+        set_error_msg(resp, "line port must be a line-facing port");
+        return;
+    }
+
+    if (client_port_info.type != CLIENT_PORT)
+    {
+        set_error_msg(resp, "client port must be a client-facing port");
+        return;
+    }
+
+    if (line_port_info.operational_state != PORT_UP)
+    {
+        set_error_msg(resp, "line port is not operationally UP");
+        return;
+    }
+
+    if (client_port_info.operational_state != PORT_UP)
+    {
+        set_error_msg(resp, "client port is not operationally UP");
+        return;
+    }
+
+    conn_t *conn = &conns[free_idx];
+    memset(conn, 0, sizeof(*conn));
+    strncpy(conn->conn_name, payload->name, MAX_CONN_NAME_CHARACTER - 1);
+    conn->line_port = payload->line_port;
+    conn->client_port = payload->client_port;
+    conn->operational_state = CONN_UP;
+
+    resp->status = STATUS_SUCCESS;
+    LOG(LOG_INFO, "created connection %s: client-%u -> line-%u", conn->conn_name, conn->client_port, conn->line_port);
 }
 
 void handle_get_connections(udp_message_t *resp)
