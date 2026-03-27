@@ -266,13 +266,12 @@ void handle_get_connections(udp_message_t *resp)
 void handle_delete_conn(const udp_message_t *req, udp_message_t *resp)
 {
     const udp_delete_conn_request_t *udp_payload = (const udp_delete_conn_request_t *)req->payload;
-    resp->status = STATUS_SUCCESS;
-    const char *err = NULL;
+    resp->status = STATUS_FAILURE;
     conn_t *found_conn = find_connection_by_name(udp_payload->name);
 
     if (found_conn == NULL) {
-        err = "could not find connection with that name";
-        LOG(LOG_ERROR, "%s (name=%s)", err, udp_payload->name);
+        set_error_msg(resp, "could not find connection with that name");
+        LOG(LOG_ERROR, "could not find connection with that name (name=%s)", udp_payload->name);
         return;
     }
 
@@ -280,7 +279,57 @@ void handle_delete_conn(const udp_message_t *req, udp_message_t *resp)
     found_conn->line_port = 0;
     found_conn->operational_state = CONN_DOWN;
     found_conn->conn_name[0] = '\0';
+    resp->status = STATUS_SUCCESS;
     LOG(LOG_INFO, "deleted connection '%s'", udp_payload->name);
+}
+
+void handle_switch_conn_line_port(const udp_message_t *req, udp_message_t *resp)
+{
+    const udp_switch_conn_line_request_t *payload = (const udp_switch_conn_line_request_t *)req->payload;
+    resp->status = STATUS_FAILURE;
+
+    if (payload->name[0] == '\0')
+    {
+        set_error_msg(resp, "connection name cannot be empty");
+        return;
+    }
+
+    if (payload->new_line_port < 1 || payload->new_line_port > 2)
+    {
+        set_error_msg(resp, "new line port must be in range [1, 2]");
+        return;
+    }
+
+    conn_t *conn = find_connection_by_name(payload->name);
+    if (conn == NULL)
+    {
+        set_error_msg(resp, "connection not found");
+        return;
+    }
+
+    port_t line_info = {0};
+    port_t client_info = {0};
+    if (!get_port_info(payload->new_line_port, &line_info) ||
+        !get_port_info(conn->client_port, &client_info))
+    {
+        set_error_msg(resp, "failed to read port state");
+        return;
+    }
+
+    if (line_info.type != LINE_PORT)
+    {
+        set_error_msg(resp, "target line port is invalid");
+        return;
+    }
+
+    conn->line_port = payload->new_line_port;
+    conn->operational_state = (line_info.operational_state == PORT_UP &&
+                               client_info.operational_state == PORT_UP)
+                                  ? CONN_UP
+                                  : CONN_DOWN;
+
+    resp->status = STATUS_SUCCESS;
+    LOG(LOG_INFO, "switched connection %s to line-%u", conn->conn_name, conn->line_port);
 }
 
 bool dispatch(const udp_message_t *req, udp_message_t *resp)
@@ -307,6 +356,10 @@ bool dispatch(const udp_message_t *req, udp_message_t *resp)
         break;
     case MSG_DELETE_CONN:
         handle_delete_conn(req, resp);
+        send_reply = true;
+        break;
+    case MSG_SWITCH_CONN_LINE_PORT:
+        handle_switch_conn_line_port(req, resp);
         send_reply = true;
         break;
     default:
